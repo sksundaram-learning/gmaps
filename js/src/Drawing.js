@@ -12,6 +12,13 @@ import { GMapsLayerView, GMapsLayerModel } from './GMapsLayer';
 import { defaultAttributes } from './defaults'
 
 
+function latLngToArray(latLng) {
+    const latitude = latLng.lat();
+    const longitude = latLng.lng();
+    return [latitude, longitude];
+}
+
+
 class DrawingStore extends Store {
     areEqual(firstState, secondState) {
         return _.isEqual(firstState, secondState)
@@ -42,9 +49,9 @@ class DrawingActions {
     }
 
     static showControlsChange(showControls) {
-        return { 
-            type: 'SHOW_CONTROLS_CHANGED', 
-            payload: { showControls } 
+        return {
+            type: 'SHOW_CONTROLS_CHANGED',
+            payload: { showControls }
         };
     }
 
@@ -63,6 +70,18 @@ class DrawingMessages {
             }
         };
         return payload;
+    }
+
+    static newLine(start, end) {
+        const payload = {
+            event: 'FEATURE_ADDED',
+            payload: {
+                featureType: 'LINE',
+                start,
+                end
+            }
+        }
+        return payload
     }
 
     static modeChange(mode) {
@@ -98,7 +117,7 @@ export class DrawingLayerModel extends GMapsLayerModel {
     // propagating them to the store if necessary
     _bindModelEvents() {
         this.on(
-            'change:toolbar_controls', 
+            'change:toolbar_controls',
             () => this._initializeControls()
         );
         this.on('change:mode', () => {
@@ -167,7 +186,7 @@ export class DrawingControlsModel extends widgets.DOMWidgetModel {
             _view_name: 'DrawingControlsView',
             show_controls: true,
             dispatcher: null,
-            store: null            
+            store: null
         }
     }
 };
@@ -177,20 +196,21 @@ export class DrawingLayerView extends GMapsLayerView {
     constructor(options) {
         super(options);
         this.canDownloadAsPng = false;
+        this._clickHandler = null;
     }
 
     render() {
-        this.features = new widgets.ViewList(this.addMarker, this.removeMarker, this)
+        this.features = new widgets.ViewList(this.addFeature, this.removeFeature, this)
         this.features.update(this.model.get('features'))
         this.model.on(
-            'change:features', 
+            'change:features',
             () => { this.features.update(this.model.get('features')) },
         );
         this.model.store.addListener(() => { this._onNewMode() })
         this._clickListener = null
     }
 
-    addMarker(childModel) {
+    addFeature(childModel) {
         return this.create_child_view(childModel)
             .then((childView) => {
                 childView.addToMapView(this.mapView)
@@ -198,8 +218,8 @@ export class DrawingLayerView extends GMapsLayerView {
             })
     }
 
-    removeMarker(markerView) {
-        markerView.removeFromMapView();
+    removeFeature(featureView) {
+        featureView.removeFromMapView();
     };
 
     _onNewMode() {
@@ -209,15 +229,19 @@ export class DrawingLayerView extends GMapsLayerView {
 
     _setClickListener(map, mode) {
         if (mode === 'DISABLED') {
-            if (this._clickListener) { this._clickListener.remove(); }
-        } else {
-            if (this._clickListener) { this._clickListener.remove(); }
-            this._clickListener = map.addListener('click', event => {
-                const { latLng } = event;
-                const latitude = latLng.lat();
-                const longitude = latLng.lng();
-                this.send(DrawingMessages.newMarker(latitude, longitude))
-            });
+            if (this._clickHandler) { this._clickHandler.remove(); }
+        } else if (mode === 'MARKER') {
+            if (this._clickHandler) { this._clickHandler.remove(); }
+            this._clickHandler = new MarkerClickHandler(
+                map,
+                (latitude, longitude) => this.send(DrawingMessages.newMarker(latitude, longitude))
+            )
+        } else if (mode === 'LINE') {
+            if (this._clickHandler) { this._clickHandler.remove(); }
+            this._clickHandler = new LineClickHandler(
+                map,
+                ([start, end]) => this.send(DrawingMessages.newLine(start, end))
+            )
         }
     }
 
@@ -225,7 +249,72 @@ export class DrawingLayerView extends GMapsLayerView {
         const { mode } = this.model.store.getState()
         this._setClickListener(mapView.map, mode)
     };
+}
 
+class MarkerClickHandler {
+    constructor(map, onNewMarker) {
+        this._clickListener = map.addListener('click', event => {
+            const { latLng } = event;
+            const latitude = latLng.lat();
+            const longitude = latLng.lng();
+            onNewMarker(latitude, longitude)
+        });
+    }
+
+    remove() {
+        this._clickListener.remove();
+    }
+}
+
+class LineClickHandler {
+    constructor(map, onNewLine) {
+        this.currentLine = null;
+        this.map = map;
+        this._clickListener = map.addListener('click', event => {
+            const { latLng } = event;
+            if (this.currentLine === null) {
+                this.currentLine = this._createLineStartingAt(latLng);
+            } else {
+                const path = this._finishLineAt(this.currentLine, latLng);
+                this.currentLine.setMap(null);
+                this.currentLine = null;
+                onNewLine(path)
+            }
+        });
+        this._moveListener = map.addListener('mousemove', event => {
+            if (this.currentLine !== null) {
+                const { latLng } = event;
+                this.currentLine.getPath().setAt(1, latLng);
+            }
+        });
+    }
+
+    _createLineStartingAt(latLng) {
+        const path = new google.maps.MVCArray([latLng, latLng])
+        const line = new google.maps.Polyline({ path, clickable: false })
+        line.setMap(this.map);
+        return line
+    }
+
+    _finishLineAt(line, latLngEnd) {
+        const linePath = line.getPath();
+        const latLngStart = linePath.getAt(0)
+        const [latitudeStart, longitudeStart] = latLngToArray(latLngStart);
+        const [latitudeEnd, longitudeEnd] = latLngToArray(latLngEnd);
+        const path = [
+            [latitudeStart, longitudeStart],
+            [latitudeEnd, longitudeEnd]
+        ]
+        return path;
+    }
+
+    remove() {
+        this._clickListener.remove();
+        this._moveListener.remove();
+        if (this.currentLine) {
+            this.currentLine.setMap(null);
+        }
+    }
 }
 
 
@@ -241,16 +330,26 @@ export class DrawingControlsView extends widgets.DOMWidgetView {
             .addClass('btn-group')
             .attr('data-toggle', 'buttons');
 
-        this.$disableButton = this._createModeButton(
+        const $disableButton = this._createModeButton(
             'fa-ban', 'Disable drawing layer'
         )
-        this._createButtonEvent(this.$disableButton, 'DISABLED')
-        this.$markerButton = this._createModeButton(
+        this._createButtonEvent($disableButton, 'DISABLED')
+        const $markerButton = this._createModeButton(
             'fa-map-marker', 'Drawing layer: switch to \'marker\' mode'
         )
-        this._createButtonEvent(this.$markerButton, 'MARKER')
+        this._createButtonEvent($markerButton, 'MARKER')
+        const $lineButton = this._createModeButton(
+            'fa-italic', 'Drawing layer: switch to \'line\' mode'
+        )
+        this._createButtonEvent($lineButton, 'LINE')
 
-        $container.append(this.$disableButton, this.$markerButton);
+        this.modeButtons = {
+            'DISABLED': $disableButton,
+            'MARKER': $markerButton,
+            'LINE': $lineButton
+        }
+
+        $container.append($disableButton, $markerButton, $lineButton);
         this.$el.append($container);
         this.$el.addClass('additional-controls')
     }
@@ -277,7 +376,7 @@ export class DrawingControlsView extends widgets.DOMWidgetView {
             .attr('title', hoverText)
             .append('<i />')
             .addClass(`fa ${icon}`)
-        
+
         return $button
     }
 
@@ -288,14 +387,14 @@ export class DrawingControlsView extends widgets.DOMWidgetView {
         })
     }
 
-    _setButtonSelected(mode) {
-        if (mode === 'MARKER') {
-            this.$markerButton.addClass('active')
-            this.$disableButton.removeClass('active')
-        } else if (mode === 'DISABLED') {
-            this.$markerButton.removeClass('active')
-            this.$disableButton.addClass('active')
-        }
+    _setButtonSelected(selectedMode) {
+        Object.entries(this.modeButtons).forEach(([mode, $button]) => {
+            if (mode === selectedMode) {
+                $button.addClass('active')
+            } else {
+                $button.removeClass('active')
+            }
+        });
     }
 
     _setVisibility(showControls) {

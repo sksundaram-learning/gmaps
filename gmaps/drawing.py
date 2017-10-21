@@ -9,11 +9,12 @@ from traitlets import (
     Bool, default, observe
 )
 
+from . import geotraitlets
 from .maps import GMapsWidgetMixin
-from .marker import Marker, MarkerOptions
+from .marker import MarkerOptions
 
 
-ALLOWED_DRAWING_MODES = {'DISABLED', 'MARKER'}
+ALLOWED_DRAWING_MODES = {'DISABLED', 'MARKER', 'LINE'}
 DEFAULT_DRAWING_MODE = 'MARKER'
 
 
@@ -22,6 +23,13 @@ class DrawingControls(GMapsWidgetMixin, widgets.DOMWidget):
     _view_name = Unicode('DrawingControlsView').tag(sync=True)
     show_controls = Bool(default_value=True, allow_none=False).tag(
         sync=True)
+
+
+class Line(GMapsWidgetMixin, widgets.Widget):
+    _view_name = Unicode('LineView').tag(sync=True)
+    _model_name = Unicode('LineModel').tag(sync=True)
+    start = geotraitlets.Point().tag(sync=True)
+    end = geotraitlets.Point().tag(sync=True)
 
 
 class Drawing(GMapsWidgetMixin, widgets.Widget):
@@ -38,7 +46,7 @@ class Drawing(GMapsWidgetMixin, widgets.Widget):
         sync=True, **widgets.widget_serialization)
 
     def __init__(self, **kwargs):
-        self._new_marker_callbacks = []
+        self._new_feature_callbacks = []
 
         super(Drawing, self).__init__(**kwargs)
         self.on_msg(self._handle_message)
@@ -48,8 +56,8 @@ class Drawing(GMapsWidgetMixin, widgets.Widget):
         # and still trigger appropriate changes
         self.marker_options.observe(self._on_marker_options_change)
 
-    def on_new_marker(self, callback):
-        self._new_marker_callbacks.append(callback)
+    def on_new_feature(self, callback):
+        self._new_feature_callbacks.append(callback)
 
     def _on_marker_options_change(self, change):
         self.marker_options = copy.deepcopy(self.marker_options)
@@ -63,30 +71,29 @@ class Drawing(GMapsWidgetMixin, widgets.Widget):
         return DrawingControls()
 
     @observe('features')
-    def _on_new_overlay(self, change):
-        if self._new_marker_callbacks:
-            old_features = change['old']
-            new_features = change['new']
-            old_markers = set([
-                feature for feature in old_features
-                if isinstance(feature, Marker)
-            ])
-            new_markers = [
-                feature for feature in new_features
-                if isinstance(feature, Marker)
-                and feature not in old_markers
+    def _on_new_feature(self, change):
+        if self._new_feature_callbacks:
+            old_features = set(change['old'])
+            new_features = [
+                feature for feature in change['new']
+                if feature not in old_features
             ]
-            for marker in new_markers:
-                for callback in self._new_marker_callbacks:
-                    callback(marker)
+            for feature in new_features:
+                for callback in self._new_feature_callbacks:
+                    callback(feature)
 
     def _handle_message(self, _, content, buffers):
         if content.get('event') == 'FEATURE_ADDED':
             payload = content['payload']
-            latitude = payload['latitude']
-            longitude = payload['longitude']
-            marker = self.marker_options.to_marker(latitude, longitude)
-            self.features = self.features + [marker]
+            if payload['featureType'] == 'MARKER':
+                latitude = payload['latitude']
+                longitude = payload['longitude']
+                feature = self.marker_options.to_marker(latitude, longitude)
+            elif payload['featureType'] == 'LINE':
+                start = payload['start']
+                end = payload['end']
+                feature = Line(start=start, end=end)
+            self.features = self.features + [feature]
         elif content.get('event') == 'MODE_CHANGED':
             payload = content['payload']
             mode = payload['mode']
