@@ -14,7 +14,7 @@ from .maps import GMapsWidgetMixin
 from .marker import MarkerOptions
 
 
-ALLOWED_DRAWING_MODES = {'DISABLED', 'MARKER', 'LINE'}
+ALLOWED_DRAWING_MODES = {'DISABLED', 'MARKER', 'LINE', 'POLYGON'}
 DEFAULT_DRAWING_MODE = 'MARKER'
 
 
@@ -30,6 +30,12 @@ class Line(GMapsWidgetMixin, widgets.Widget):
     _model_name = Unicode('LineModel').tag(sync=True)
     start = geotraitlets.Point().tag(sync=True)
     end = geotraitlets.Point().tag(sync=True)
+
+
+class Polygon(GMapsWidgetMixin, widgets.Widget):
+    _view_name = Unicode('PolygonView').tag(sync=True)
+    _model_name = Unicode('PolygonModel').tag(sync=True)
+    path = List(geotraitlets.Point()).tag(sync=True)
 
 
 class Drawing(GMapsWidgetMixin, widgets.Widget):
@@ -93,6 +99,9 @@ class Drawing(GMapsWidgetMixin, widgets.Widget):
                 start = payload['start']
                 end = payload['end']
                 feature = Line(start=start, end=end)
+            elif payload['featureType'] == 'POLYGON':
+                path = payload['path']
+                feature = Polygon(path=path)
             self.features = self.features + [feature]
         elif content.get('event') == 'MODE_CHANGED':
             payload = content['payload']

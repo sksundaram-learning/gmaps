@@ -10,13 +10,7 @@ import GoogleMapsLoader from 'google-maps';
 
 import { GMapsLayerView, GMapsLayerModel } from './GMapsLayer';
 import { defaultAttributes } from './defaults'
-
-
-function latLngToArray(latLng) {
-    const latitude = latLng.lat();
-    const longitude = latLng.lng();
-    return [latitude, longitude];
-}
+import { latLngToArray } from './services/googleConverters'
 
 
 class DrawingStore extends Store {
@@ -82,6 +76,17 @@ class DrawingMessages {
             }
         }
         return payload
+    }
+
+    static newPolygon(path) {
+        const payload = {
+            event: 'FEATURE_ADDED',
+            payload: {
+                featureType: 'POLYGON',
+                path
+            }
+        }
+        return payload ;
     }
 
     static modeChange(mode) {
@@ -242,6 +247,12 @@ export class DrawingLayerView extends GMapsLayerView {
                 map,
                 ([start, end]) => this.send(DrawingMessages.newLine(start, end))
             )
+        } else if (mode === 'POLYGON') {
+            if (this._clickHandler) { this._clickHandler.remove(); }
+            this._clickHandler = new PolygonClickHandler(
+                map,
+                path => this.send(DrawingMessages.newPolygon(path))
+            )
         }
     }
 
@@ -318,6 +329,75 @@ class LineClickHandler {
 }
 
 
+class PolygonClickHandler {
+    constructor(map, onNewPolygon) {
+        this.map = map;
+        this.currentPolygon = null;
+        this.map.setOptions({ disableDoubleClickZoom: true })
+        this._clickListener = map.addListener('click', event => {
+            const { latLng } = event;
+            if (this.currentPolygon === null) {
+                this.currentPolygon = this._createPolygonStartingAt(latLng);
+            } else {
+                this._finishCurrentLine(latLng);
+            }
+        });
+        this._dblclickListener = map.addListener('dblclick', event => {
+            if (this.currentPolygon !== null) {
+                const path = this._completePolygon();
+                this.currentPolygon.setMap(null);
+                this.currentPolygon = null;
+                if (path.length > 2) {
+                    // Only dispatch an event if there are at
+                    // least three points. Otherwise, it's
+                    // likely to just be user error.
+                    onNewPolygon(path);
+                }
+            };
+        })
+        this._moveListener = map.addListener('mousemove', event => {
+            if (this.currentPolygon !== null) {
+                const { latLng } = event;
+                const currentPath = this.currentPolygon.getPath();
+                currentPath.setAt(currentPath.getLength()-1, latLng);
+            }
+        });
+    }
+
+    remove() {
+        this._clickListener.remove();
+        this._dblclickListener.remove();
+        this._moveListener.remove();
+        if (this.currentPolygon) {
+            this.currentPolygon.setMap(null);
+        }
+        this.map.setOptions({ disableDoubleClickZoom: false })
+    }
+
+    _createPolygonStartingAt(latLng) {
+        const path = new google.maps.MVCArray([latLng, latLng])
+        const polygon = new google.maps.Polyline({ path, clickable: false })
+        polygon.setMap(this.map);
+        return polygon;
+    }
+
+    _finishCurrentLine(latLng) {
+        const currentPath = this.currentPolygon.getPath();
+        const lastLatLng = currentPath.getAt(currentPath.getLength()-1);
+        currentPath.push(lastLatLng);
+    }
+
+    _completePolygon() {
+        const currentPath = this.currentPolygon.getPath();
+        const pathElems = currentPath.getArray().map(point => latLngToArray(point))
+        // last element is duplicate since we always introduce
+        // two new elements on click.
+        const path = _.initial(pathElems);
+        return path;
+    }
+}
+
+
 export class DrawingControlsView extends widgets.DOMWidgetView {
     render() {
         this._createLayout();
@@ -342,14 +422,24 @@ export class DrawingControlsView extends widgets.DOMWidgetView {
             'gmaps-icon line', 'Drawing layer: switch to \'line\' mode'
         )
         this._createButtonEvent($lineButton, 'LINE')
+        const $polygonButton = this._createModeButton(
+            'gmaps-icon polygon', 'Drawing layer: switch to \'polygon\' mode'
+        )
+        this._createButtonEvent($polygonButton, 'POLYGON')
 
         this.modeButtons = {
             'DISABLED': $disableButton,
             'MARKER': $markerButton,
-            'LINE': $lineButton
+            'LINE': $lineButton,
+            'POLYGON': $polygonButton
         }
 
-        $container.append($disableButton, $markerButton, $lineButton);
+        $container.append(
+            $disableButton,
+            $markerButton,
+            $lineButton,
+            $polygonButton
+        );
         this.$el.append($container);
         this.$el.addClass('additional-controls')
     }
